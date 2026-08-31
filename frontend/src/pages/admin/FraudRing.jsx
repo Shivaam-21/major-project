@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Network, ShieldAlert, Users, Landmark } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Network, ShieldAlert, ShieldX, Users, Landmark, Radio } from 'lucide-react'
 import { adminService } from '../../services/admin'
+import { useLiveFeed } from '../../hooks/useLiveFeed'
 import SkeletonLoader from '../../components/SkeletonLoader'
 import { formatCurrency } from '../../utils/formatCurrency'
 
@@ -78,16 +79,37 @@ function simulateLayout(nodes, edges) {
 
 const FraudRing = () => {
   const [loading, setLoading] = useState(true)
-  const [graph, setGraph] = useState({ nodes: [], edges: [], suspiciousReceivers: 0 })
+  const [graph, setGraph] = useState({
+    nodes: [],
+    edges: [],
+    suspiciousReceivers: 0,
+    fraudulentTransactions: 0,
+    flaggedSenders: 0,
+  })
   const [selectedNode, setSelectedNode] = useState(null)
   const containerRef = useRef(null)
+  const refreshTimer = useRef(null)
 
-  useEffect(() => {
+  const loadGraph = useCallback(() => {
     adminService
       .getFraudRing()
       .then(setGraph)
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    loadGraph()
+    return () => clearTimeout(refreshTimer.current)
+  }, [loadGraph])
+
+  // When a payment is scored anywhere in the system, the graph refreshes so a
+  // detected fraud shows up here immediately (debounced to absorb bursts).
+  const liveStatus = useLiveFeed((event) => {
+    if (event.type === 'NEW_TRANSACTION' || event.type === 'TRANSACTION_UPDATED') {
+      clearTimeout(refreshTimer.current)
+      refreshTimer.current = setTimeout(loadGraph, 800)
+    }
+  })
 
   const positions = useMemo(
     () => simulateLayout(graph.nodes, graph.edges),
@@ -117,13 +139,20 @@ const FraudRing = () => {
             Fraud Ring Detector
           </h1>
           <p className="text-gray-600 mt-1">
-            Maps senders to receiver accounts and flags accounts shared by multiple senders &mdash; a classic
-            money-mule / collusion signal that a single-transaction risk score can&apos;t see.
+            Maps senders to receiver accounts, marks every detected fraud in red, and flags accounts shared by
+            multiple senders &mdash; a classic money-mule / collusion signal that a single-transaction risk score
+            can&apos;t see.
           </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-surface px-3 py-1.5">
+          <Radio className={`h-3.5 w-3.5 ${liveStatus === 'live' ? 'text-success' : 'text-gray-400'}`} />
+          <span className={`text-xs font-medium ${liveStatus === 'live' ? 'text-success' : 'text-gray-500'}`}>
+            {liveStatus === 'live' ? 'Auto-updating live' : 'Live feed offline'}
+          </span>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="bg-surface rounded-2xl border border-gray-100 p-6">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
@@ -150,14 +179,25 @@ const FraudRing = () => {
             </div>
           </div>
         </div>
-        <div className="bg-surface rounded-2xl border border-danger/20 p-6">
+        <div className="bg-surface rounded-2xl border border-warning/30 p-6">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-full bg-danger/10 text-danger flex items-center justify-center">
+            <div className="h-10 w-10 rounded-full bg-warning/10 text-warning flex items-center justify-center">
               <ShieldAlert className="h-5 w-5" />
             </div>
             <div>
               <p className="text-sm text-gray-600">Shared receivers flagged</p>
-              <p className="text-xl font-semibold text-danger">{graph.suspiciousReceivers}</p>
+              <p className="text-xl font-semibold text-warning">{graph.suspiciousReceivers}</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-surface rounded-2xl border border-danger/20 p-6">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-danger/10 text-danger flex items-center justify-center">
+              <ShieldX className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-sm text-gray-600">Fraudulent transactions</p>
+              <p className="text-xl font-semibold text-danger">{graph.fraudulentTransactions ?? 0}</p>
             </div>
           </div>
         </div>
@@ -183,9 +223,10 @@ const FraudRing = () => {
                     y1={a.y}
                     x2={b.x}
                     y2={b.y}
-                    stroke={edge.shared ? '#ef4444' : '#cbd5e1'}
-                    strokeWidth={edge.shared ? 2 : 1.5}
-                    strokeOpacity={edge.shared ? 0.85 : 0.6}
+                    stroke={edge.fraud ? '#ef4444' : edge.shared ? '#f59e0b' : '#cbd5e1'}
+                    strokeWidth={edge.fraud ? 2.5 : edge.shared ? 2 : 1.5}
+                    strokeOpacity={edge.fraud ? 0.9 : edge.shared ? 0.85 : 0.6}
+                    strokeDasharray={edge.fraud ? '7 4' : undefined}
                   />
                 )
               })}
@@ -195,8 +236,15 @@ const FraudRing = () => {
                 if (!pos) return null
                 const isUser = node.type === 'user'
                 const isSelected = selectedNode?.id === node.id
-                const radius = isUser ? 16 : node.flagged ? 22 : 18
-                const fill = node.flagged ? '#ef4444' : isUser ? '#3b82f6' : '#64748b'
+                const highlighted = node.fraudulent || node.flagged
+                const radius = isUser ? (node.fraudulent ? 20 : 16) : highlighted ? 22 : 18
+                const fill = node.fraudulent
+                  ? '#ef4444'
+                  : node.flagged
+                    ? '#f59e0b'
+                    : isUser
+                      ? '#3b82f6'
+                      : '#64748b'
 
                 return (
                   <g
@@ -205,8 +253,8 @@ const FraudRing = () => {
                     onClick={() => setSelectedNode(node)}
                     className="cursor-pointer"
                   >
-                    {node.flagged ? (
-                      <circle r={radius + 6} fill="#ef4444" opacity={0.15}>
+                    {highlighted ? (
+                      <circle r={radius + 6} fill={node.fraudulent ? '#ef4444' : '#f59e0b'} opacity={0.15}>
                         <animate attributeName="r" values={`${radius + 4};${radius + 10};${radius + 4}`} dur="1.8s" repeatCount="indefinite" />
                       </circle>
                     ) : null}
@@ -238,10 +286,16 @@ const FraudRing = () => {
                 <span className="h-2.5 w-2.5 rounded-full bg-slate-500 inline-block" /> Receiver account
               </span>
               <span className="flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-full bg-danger inline-block" /> Shared / flagged receiver
+                <span className="h-2.5 w-2.5 rounded-full bg-amber-500 inline-block" /> Shared receiver (mule signal)
               </span>
               <span className="flex items-center gap-1">
-                <span className="h-2.5 w-1 rounded bg-danger inline-block" /> Suspicious money flow
+                <span className="h-2.5 w-2.5 rounded-full bg-danger inline-block" /> Fraud-linked account
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-0.5 w-4 border-t-2 border-dashed border-danger inline-block" /> Fraudulent transaction
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2.5 w-1 rounded bg-amber-500 inline-block" /> Shared money flow
               </span>
             </div>
           </div>
@@ -265,9 +319,17 @@ const FraudRing = () => {
                 {selectedNode.type === 'receiver' ? (
                   <div>
                     <p className="text-sm text-gray-600">Distinct senders</p>
-                    <p className={`font-medium ${selectedNode.senderCount >= 2 ? 'text-danger' : 'text-gray-900'}`}>
+                    <p className={`font-medium ${selectedNode.senderCount >= 2 ? 'text-warning' : 'text-gray-900'}`}>
                       {selectedNode.senderCount}
                       {selectedNode.senderCount >= 2 ? ' — shared across multiple accounts' : ''}
+                    </p>
+                  </div>
+                ) : null}
+                {selectedNode.fraudCount > 0 ? (
+                  <div>
+                    <p className="text-sm text-gray-600">Fraudulent transactions</p>
+                    <p className="font-medium text-danger">
+                      {selectedNode.fraudCount} detected on this account
                     </p>
                   </div>
                 ) : null}
@@ -283,12 +345,23 @@ const FraudRing = () => {
                       <div
                         key={edge.transactionId}
                         className={`rounded-xl border p-3 text-sm ${
-                          edge.shared ? 'border-danger/30 bg-danger/5' : 'border-gray-200 bg-gray-50'
+                          edge.fraud
+                            ? 'border-danger/30 bg-danger/5'
+                            : edge.shared
+                              ? 'border-warning/40 bg-warning/5'
+                              : 'border-gray-200 bg-gray-50'
                         }`}
                       >
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center">
                           <span className="font-medium text-gray-900">{formatCurrency(edge.amount)}</span>
-                          <span className="text-xs text-gray-500">{edge.date}</span>
+                          <span className="flex items-center gap-2">
+                            {edge.fraud ? (
+                              <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-danger">
+                                Fraud
+                              </span>
+                            ) : null}
+                            <span className="text-xs text-gray-500">{edge.date}</span>
+                          </span>
                         </div>
                         <p className="text-xs text-gray-600 mt-1">
                           {nodesById.get(edge.source)?.label} → {nodesById.get(edge.target)?.label}

@@ -2,6 +2,20 @@ import { useState, useEffect } from 'react'
 import { AlertTriangle, CheckCircle, XCircle, Eye } from 'lucide-react'
 import { adminService } from '../../services/admin'
 import SkeletonLoader from '../../components/SkeletonLoader'
+import ExplanationPanel from '../../components/ExplanationPanel'
+
+const FEATURE_LABELS = {
+  amount: 'Amount',
+  transaction_frequency: 'Transaction frequency',
+  device_change: 'Device change',
+  location_change: 'Location change',
+  hour_of_day: 'Hour of day',
+}
+
+const formatFeatureValue = (value) => {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  return String(value)
+}
 
 const Alerts = () => {
   const [loading, setLoading] = useState(true)
@@ -121,12 +135,25 @@ const Alerts = () => {
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl bg-gray-50 p-4">
-              <p className="font-medium text-gray-900 mb-2">Features</p>
-              <pre className="text-xs text-gray-700 whitespace-pre-wrap">{JSON.stringify(selectedAlert.features, null, 2)}</pre>
+              <p className="font-medium text-gray-900 mb-3">Transaction features</p>
+              <div className="space-y-2">
+                {Object.entries(selectedAlert.features || {}).map(([key, value]) => (
+                  <div key={key} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-600">{FEATURE_LABELS[key] || key}</span>
+                    <span className="font-medium text-gray-900">{formatFeatureValue(value)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex items-center justify-between border-t border-gray-200 pt-3 text-sm">
+                <span className="text-gray-600">Final risk score</span>
+                <span className={`font-semibold ${selectedAlert.riskScore >= 70 ? 'text-danger' : selectedAlert.riskScore >= 45 ? 'text-warning' : 'text-success'}`}>
+                  {Number(selectedAlert.riskScore ?? 0).toFixed(1)}%
+                </span>
+              </div>
             </div>
             <div className="rounded-xl bg-gray-50 p-4">
-              <p className="font-medium text-gray-900 mb-2">Explanation</p>
-              <pre className="text-xs text-gray-700 whitespace-pre-wrap">{JSON.stringify(selectedAlert.explanation, null, 2)}</pre>
+              <p className="font-medium text-gray-900 mb-3">Why was this flagged?</p>
+              <ExplanationPanel explanation={selectedAlert.explanation} />
             </div>
           </div>
 

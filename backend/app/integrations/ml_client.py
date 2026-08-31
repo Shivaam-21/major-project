@@ -35,6 +35,7 @@ def fetch_ml_scores(
             "anomaly_score": float(data.get("anomaly_score", 0.35)),
             "model_breakdown": data.get("model_breakdown", {}) or {},
             "anomaly_breakdown": data.get("anomaly_breakdown", {}) or {},
+            "explanation": data.get("explanation", {}) or {},
             "metadata": data.get("metadata", {}) or {},
             "used_live_model": True,
         }
@@ -46,6 +47,7 @@ def fetch_ml_scores(
             "anomaly_score": round(anomaly, 4),
             "model_breakdown": {},
             "anomaly_breakdown": {},
+            "explanation": {},
             "metadata": {},
             "used_live_model": False,
         }

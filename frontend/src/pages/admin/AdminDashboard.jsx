@@ -6,7 +6,7 @@ import TransactionTable from '../../components/TransactionTable'
 import AlertPopup from '../../components/AlertPopup'
 import SkeletonLoader from '../../components/SkeletonLoader'
 import { adminService } from '../../services/admin'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { useLiveFeed } from '../../hooks/useLiveFeed'
 
 const AdminDashboard = () => {
   const [loading, setLoading] = useState(true)
@@ -15,14 +15,15 @@ const AdminDashboard = () => {
   const [fraudAlert, setFraudAlert] = useState(null)
   const navigate = useNavigate()
 
-  useWebSocket('wss://api.example.com/ws', {
-    onMessage: (data) => {
-      if (data.type === 'FRAUD_ALERT') {
-        setFraudAlert(data.alert)
-      }
-      if (data.type === 'NEW_TRANSACTION') {
-        setRecentTransactions(prev => [data.transaction, ...prev.slice(0, 9)])
-      }
+  useLiveFeed((data) => {
+    if (data.type === 'FRAUD_ALERT') {
+      setFraudAlert(data.alert)
+    }
+    if (data.type === 'NEW_TRANSACTION') {
+      setRecentTransactions(prev => [data.transaction, ...prev.filter((tx) => tx.id !== data.transaction.id)].slice(0, 10))
+    }
+    if (data.type === 'TRANSACTION_UPDATED') {
+      setRecentTransactions(prev => prev.map((tx) => (tx.id === data.transaction.id ? data.transaction : tx)))
     }
   })
 

@@ -18,6 +18,7 @@ class RiskAssessment:
     used_live_model: bool
     model_breakdown: dict[str, float]
     anomaly_breakdown: dict[str, float]
+    feature_contributions: dict
     model_metadata: dict
 
 
@@ -121,5 +122,6 @@ def evaluate_risk(
             key: round(float(value), 4)
             for key, value in (ml_scores.get("anomaly_breakdown", {}) or {}).items()
         },
+        feature_contributions=ml_scores.get("explanation", {}) or {},
         model_metadata=ml_scores.get("metadata", {}) or {},
     )

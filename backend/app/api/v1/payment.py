@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_admin, get_current_user
+from app.api.v1.live import broadcast_event
 from app.core.config import settings
 from app.db.session import get_db
 from app.integrations.email_client import EmailNotConfiguredError, send_email
@@ -250,6 +251,7 @@ def create_payment(
             "ruleHits": list(risk.rule_hits),
             "modelBreakdown": risk.model_breakdown,
             "anomalyBreakdown": risk.anomaly_breakdown,
+            "featureContributions": risk.feature_contributions,
             "modelMetadata": risk.model_metadata,
             "usedLiveModel": risk.used_live_model,
             "reason": risk.reason,
@@ -257,8 +259,12 @@ def create_payment(
     )
     db.add(transaction)
     db.flush()
-    _build_alert(db, transaction)
+    alert = _build_alert(db, transaction)
     db.commit()
+
+    broadcast_event("NEW_TRANSACTION", transaction=_serialize_transaction(transaction))
+    if alert is not None:
+        broadcast_event("FRAUD_ALERT", alert=_serialize_alert(alert))
 
     if risk.decision == "OTP_REQUIRED":
         return PaymentResponse(
@@ -384,8 +390,11 @@ def verify_payment_otp(
         tx.status = "failed"
         tx.message = "Maximum OTP attempts exceeded"
         db.add(tx)
-        _build_alert(db, tx)
+        alert = _build_alert(db, tx)
         db.commit()
+        broadcast_event("TRANSACTION_UPDATED", transaction=_serialize_transaction(tx))
+        if alert is not None:
+            broadcast_event("FRAUD_ALERT", alert=_serialize_alert(alert))
         raise HTTPException(status_code=400, detail="Maximum OTP attempts exceeded")
 
     state.attempts += 1
@@ -402,6 +411,8 @@ def verify_payment_otp(
     db.add(tx)
     _build_alert(db, tx)
     db.commit()
+
+    broadcast_event("TRANSACTION_UPDATED", transaction=_serialize_transaction(tx))
 
     return PaymentResponse(
         transaction_id=tx.id,
@@ -462,7 +473,9 @@ def update_alert(
     db.add(alert)
     db.commit()
     db.refresh(alert)
-    return _serialize_alert(alert)
+    serialized = _serialize_alert(alert)
+    broadcast_event("ALERT_UPDATED", alert=serialized)
+    return serialized
 
 
 @router.get("/model-metrics")
@@ -474,21 +487,32 @@ def get_model_metrics() -> dict:
     return {"available": True, "metrics": metrics}
 
 
+def _is_fraudulent(tx: Transaction) -> bool:
+    return tx.decision == "BLOCK" or tx.status == "failed" or float(tx.risk_score or 0) >= 70
+
+
 @router.get("/fraud-ring")
 def get_fraud_ring(
     _admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Builds a user-to-receiver transaction graph and flags receiver accounts
-    that are shared across multiple senders (a classic money-mule / collusion
-    signal), weighted by how risky those shared transactions were.
+    """Builds a user-to-receiver transaction graph. Flags receiver accounts
+    shared across multiple senders (a classic money-mule / collusion signal)
+    and marks every detected fraud — blocked or high-risk transactions — so
+    fraudulent money flows and the accounts involved stand out in the graph.
     """
     transactions = db.scalars(
         select(Transaction).where(Transaction.receiver_account.is_not(None))
     ).all()
 
     if not transactions:
-        return {"nodes": [], "edges": [], "suspiciousReceivers": 0}
+        return {
+            "nodes": [],
+            "edges": [],
+            "suspiciousReceivers": 0,
+            "fraudulentTransactions": 0,
+            "flaggedSenders": 0,
+        }
 
     user_ids = {tx.user_id for tx in transactions}
     users_by_id = {
@@ -498,19 +522,29 @@ def get_fraud_ring(
     senders_by_receiver: dict[str, set[int]] = defaultdict(set)
     receiver_names: dict[str, str] = {}
     for tx in transactions:
-        senders_by_receiver[tx.receiver_account].add(tx.user_id)
+        account = tx.receiver_account
+        if not account:
+            continue
+        senders_by_receiver[account].add(tx.user_id)
         if tx.receiver_name:
-            receiver_names[tx.receiver_account] = tx.receiver_name
+            receiver_names[account] = tx.receiver_name
 
     nodes: dict[str, dict] = {}
     edges: list[dict] = []
     suspicious_receivers = 0
+    fraudulent_transactions = 0
 
     for tx in transactions:
+        account = tx.receiver_account
+        if not account:
+            continue
         user_node_id = f"user:{tx.user_id}"
-        receiver_node_id = f"receiver:{tx.receiver_account}"
-        sender_count = len(senders_by_receiver[tx.receiver_account])
+        receiver_node_id = f"receiver:{account}"
+        sender_count = len(senders_by_receiver[account])
         is_shared = sender_count >= 2
+        is_fraud = _is_fraudulent(tx)
+        if is_fraud:
+            fraudulent_transactions += 1
 
         if user_node_id not in nodes:
             user = users_by_id.get(tx.user_id)
@@ -520,6 +554,8 @@ def get_fraud_ring(
                 "label": user.email if user else f"user #{tx.user_id}",
                 "maxRiskScore": 0.0,
                 "flagged": False,
+                "fraudulent": False,
+                "fraudCount": 0,
             }
         if receiver_node_id not in nodes:
             if is_shared:
@@ -527,17 +563,23 @@ def get_fraud_ring(
             nodes[receiver_node_id] = {
                 "id": receiver_node_id,
                 "type": "receiver",
-                "label": receiver_names.get(tx.receiver_account, tx.receiver_account),
-                "account": tx.receiver_account,
+                "label": receiver_names.get(account, account),
+                "account": account,
                 "senderCount": sender_count,
                 "maxRiskScore": 0.0,
                 "flagged": is_shared,
+                "fraudulent": False,
+                "fraudCount": 0,
             }
 
         risk_score = float(tx.risk_score or 0)
         for node_id in (user_node_id, receiver_node_id):
-            if risk_score > nodes[node_id]["maxRiskScore"]:
-                nodes[node_id]["maxRiskScore"] = risk_score
+            node = nodes[node_id]
+            if risk_score > node["maxRiskScore"]:
+                node["maxRiskScore"] = risk_score
+            if is_fraud:
+                node["fraudulent"] = True
+                node["fraudCount"] += 1
 
         edges.append(
             {
@@ -548,15 +590,23 @@ def get_fraud_ring(
                 "riskScore": risk_score,
                 "riskLevel": tx.risk_level,
                 "decision": tx.decision,
+                "status": tx.status,
                 "date": tx.date,
                 "shared": is_shared,
+                "fraud": is_fraud,
             }
         )
+
+    flagged_senders = sum(
+        1 for node in nodes.values() if node["type"] == "user" and node["fraudulent"]
+    )
 
     return {
         "nodes": list(nodes.values()),
         "edges": edges,
         "suspiciousReceivers": suspicious_receivers,
+        "fraudulentTransactions": fraudulent_transactions,
+        "flaggedSenders": flagged_senders,
     }
 
 

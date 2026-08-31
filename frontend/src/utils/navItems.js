@@ -8,7 +8,8 @@ import {
   AlertTriangle,
   FileText,
   Settings,
-  Network
+  Network,
+  Radio
 } from 'lucide-react'
 
 export const userNavItems = [
@@ -21,6 +22,7 @@ export const userNavItems = [
 
 export const adminNavItems = [
   { label: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
+  { label: 'Live Monitor', path: '/admin/live', icon: Radio },
   { label: 'Transactions', path: '/admin/transactions', icon: History },
   { label: 'Alerts', path: '/admin/alerts', icon: AlertTriangle },
   { label: 'Fraud Ring', path: '/admin/fraud-ring', icon: Network },

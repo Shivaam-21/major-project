@@ -17,4 +17,5 @@ class PredictionResponse(BaseModel):
     anomaly_score: float
     model_breakdown: dict[str, float] = Field(default_factory=dict)
     anomaly_breakdown: dict[str, float] = Field(default_factory=dict)
+    explanation: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

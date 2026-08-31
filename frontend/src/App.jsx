@@ -20,6 +20,7 @@ import Profile from './pages/user/Profile'
 
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard'
+import LiveMonitor from './pages/admin/LiveMonitor'
 import Transactions from './pages/admin/Transactions'
 import Alerts from './pages/admin/Alerts'
 import FraudRing from './pages/admin/FraudRing'
@@ -63,6 +64,7 @@ function App() {
             <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
             <Route path="/admin/dashboard" element={<AdminDashboard />} />
             <Route path="/admin/AdminDashboard" element={<Navigate to="/admin/dashboard" replace />} />
+            <Route path="/admin/live" element={<LiveMonitor />} />
             <Route path="/admin/transactions" element={<Transactions />} />
             <Route path="/admin/Transactions" element={<Navigate to="/admin/transactions" replace />} />
             <Route path="/admin/alerts" element={<Alerts />} />
